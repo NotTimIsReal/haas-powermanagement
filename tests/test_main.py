@@ -1,7 +1,7 @@
 import unittest
 import sys
 from types import ModuleType
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import Mock, call, mock_open, patch
 
 # Keep unit tests runnable even when third-party deps are not installed locally.
 if "requests" not in sys.modules:
@@ -97,7 +97,7 @@ class TestUpdateAverageRates(unittest.TestCase):
             0.0,
             0,
         )
-        self.assertEqual(result, (0.0, 0, 0.0, 0))
+        self.assertEqual(result, (0.0, 0, 0.0, 0, 50, 1000))
 
     def test_update_average_rates_tracks_charging(self):
         result = main.update_average_rates(
@@ -109,8 +109,9 @@ class TestUpdateAverageRates(unittest.TestCase):
             0,
             0.0,
             0,
+            min_sample_seconds=0,
         )
-        self.assertEqual(result, (6.0, 1, 0.0, 0))
+        self.assertEqual(result, (6.0, 1, 0.0, 0, 53, 1800))
 
     def test_update_average_rates_tracks_discharging(self):
         result = main.update_average_rates(
@@ -122,8 +123,9 @@ class TestUpdateAverageRates(unittest.TestCase):
             0,
             0.0,
             0,
+            min_sample_seconds=0,
         )
-        self.assertEqual(result, (0.0, 0, 6.0, 1))
+        self.assertEqual(result, (0.0, 0, 6.0, 1, 57, 1800))
 
     def test_update_average_rates_ignores_zero_elapsed_time(self):
         result = main.update_average_rates(
@@ -136,7 +138,102 @@ class TestUpdateAverageRates(unittest.TestCase):
             2.0,
             1,
         )
-        self.assertEqual(result, (1.0, 1, 2.0, 1))
+        self.assertEqual(result, (1.0, 1, 2.0, 1, 60, 1000))
+
+    def test_update_average_rates_ignores_short_samples(self):
+        result = main.update_average_rates(
+            60,
+            0,
+            59,
+            60,
+            1.0,
+            1,
+            2.0,
+            1,
+        )
+        self.assertEqual(result, (1.0, 1, 2.0, 1, 60, 0))
+
+
+class TestPersistBatteryData(unittest.TestCase):
+    @patch("main.os.path.exists", return_value=False)
+    @patch("builtins.open", new_callable=mock_open)
+    def test_persist_battery_data_writes_header_for_new_file(self, mocked_open, _mock_exists):
+        main.persist_battery_data(
+            "battery_history.csv",
+            1713388800,
+            25,
+            1.5,
+            2.5,
+            3.0,
+            2,
+            5.0,
+            3,
+        )
+
+        mocked_open.assert_called_once_with("battery_history.csv", "a", encoding="utf-8")
+        handle = mocked_open()
+        self.assertEqual(
+            handle.write.call_args_list,
+            [
+                call(
+                    "timestamp,battery_level,avg_charge_rate,avg_discharge_rate,"
+                    "charge_rate_sum,charge_rate_count,discharge_rate_sum,discharge_rate_count\n"
+                ),
+                call("1713388800,25,1.50,2.50,3.00,2,5.00,3\n"),
+            ],
+        )
+
+    @patch("main.os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open)
+    def test_persist_battery_data_appends_without_header(self, mocked_open, _mock_exists):
+        main.persist_battery_data(
+            "battery_history.csv",
+            1713388860,
+            24,
+            1.5,
+            2.5,
+            3.0,
+            2,
+            5.0,
+            3,
+        )
+
+        handle = mocked_open()
+        handle.write.assert_called_once_with("1713388860,24,1.50,2.50,3.00,2,5.00,3\n")
+
+
+class TestLoadPersistedState(unittest.TestCase):
+    @patch("main.os.path.exists", return_value=False)
+    def test_load_persisted_state_returns_defaults_when_file_missing(self, _mock_exists):
+        result = main.load_persisted_state("battery_history.csv")
+        self.assertEqual(result, (None, None, 0.0, 0, 0.0, 0))
+
+    @patch("main.os.path.exists", return_value=True)
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data=(
+            "timestamp,battery_level,avg_charge_rate,avg_discharge_rate,"
+            "charge_rate_sum,charge_rate_count,discharge_rate_sum,discharge_rate_count\n"
+            "1713388860,24,1.50,2.50,3.00,2,5.00,3\n"
+        ),
+    )
+    def test_load_persisted_state_reads_latest_row(self, _mock_open_file, _mock_exists):
+        result = main.load_persisted_state("battery_history.csv")
+        self.assertEqual(result, (24, 1713388860.0, 3.0, 2, 5.0, 3))
+
+    @patch("main.os.path.exists", return_value=True)
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data=(
+            "timestamp,battery_level,avg_charge_rate,avg_discharge_rate\n"
+            "1713388860,24,1.50,2.50\n"
+        ),
+    )
+    def test_load_persisted_state_supports_legacy_columns(self, _mock_open_file, _mock_exists):
+        result = main.load_persisted_state("battery_history.csv")
+        self.assertEqual(result, (24, 1713388860.0, 1.5, 1, 2.5, 1))
 
 
 if __name__ == "__main__":

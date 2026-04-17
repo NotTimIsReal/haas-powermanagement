@@ -1,11 +1,14 @@
 import requests
 import time
 import os
+import csv
 from dotenv import load_dotenv
 load_dotenv()
 UPPER_LIMIT = 80  # Turn off at 80%
 LOWER_LIMIT = 20  # Turn back on at 20% to keep it cycling
 CHECK_INTERVAL = 60  # Seconds between checks
+MIN_RATE_SAMPLE_SECONDS = 300  # Avoid spiky rates from 1-minute integer changes
+LOG_FILE = os.getenv("BATTERY_LOG_FILE", "battery_history.csv")
 
 HEADERS = {
     "Authorization": f"Bearer {os.getenv('API_KEY')}",
@@ -45,6 +48,7 @@ def update_average_rates(
     charge_rate_count,
     discharge_rate_sum,
     discharge_rate_count,
+    min_sample_seconds=MIN_RATE_SAMPLE_SECONDS,
 ):
     if previous_level is None or previous_time is None:
         return (
@@ -52,18 +56,34 @@ def update_average_rates(
             charge_rate_count,
             discharge_rate_sum,
             discharge_rate_count,
+            level,
+            now,
         )
 
-    hours_elapsed = (now - previous_time) / 3600
-    if hours_elapsed <= 0:
+    elapsed_seconds = now - previous_time
+    if elapsed_seconds <= 0:
         return (
             charge_rate_sum,
             charge_rate_count,
             discharge_rate_sum,
             discharge_rate_count,
+            previous_level,
+            previous_time,
         )
 
-    rate = (level - previous_level) / hours_elapsed
+    level_delta = level - previous_level
+    if level_delta == 0 or elapsed_seconds < min_sample_seconds:
+        return (
+            charge_rate_sum,
+            charge_rate_count,
+            discharge_rate_sum,
+            discharge_rate_count,
+            previous_level,
+            previous_time,
+        )
+
+    hours_elapsed = elapsed_seconds / 3600
+    rate = level_delta / hours_elapsed
     if rate > 0:
         charge_rate_sum += rate
         charge_rate_count += 1
@@ -76,16 +96,80 @@ def update_average_rates(
         charge_rate_count,
         discharge_rate_sum,
         discharge_rate_count,
+        level,
+        now,
     )
+
+
+def persist_battery_data(
+    file_path,
+    timestamp,
+    level,
+    avg_charge,
+    avg_discharge,
+    charge_rate_sum,
+    charge_rate_count,
+    discharge_rate_sum,
+    discharge_rate_count,
+):
+    file_exists = os.path.exists(file_path)
+    with open(file_path, "a", encoding="utf-8") as log_file:
+        if not file_exists:
+            log_file.write(
+                "timestamp,battery_level,avg_charge_rate,avg_discharge_rate,"
+                "charge_rate_sum,charge_rate_count,discharge_rate_sum,discharge_rate_count\n"
+            )
+        log_file.write(
+            f"{int(timestamp)},{level},{avg_charge:.2f},{avg_discharge:.2f},"
+            f"{charge_rate_sum:.2f},{charge_rate_count},"
+            f"{discharge_rate_sum:.2f},{discharge_rate_count}\n"
+        )
+
+
+def load_persisted_state(file_path):
+    if not os.path.exists(file_path):
+        return None, None, 0.0, 0, 0.0, 0
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as log_file:
+            reader = csv.DictReader(log_file)
+            last_row = None
+            for row in reader:
+                last_row = row
+
+            if not last_row:
+                return None, None, 0.0, 0, 0.0, 0
+
+            previous_time = float(last_row["timestamp"])
+            previous_level = int(last_row["battery_level"])
+
+            # Backward compatibility for older logs that only have averages.
+            charge_rate_sum = float(last_row.get("charge_rate_sum") or last_row.get("avg_charge_rate") or 0.0)
+            charge_rate_count = int(last_row.get("charge_rate_count") or (1 if charge_rate_sum > 0 else 0))
+            discharge_rate_sum = float(last_row.get("discharge_rate_sum") or last_row.get("avg_discharge_rate") or 0.0)
+            discharge_rate_count = int(last_row.get("discharge_rate_count") or (1 if discharge_rate_sum > 0 else 0))
+
+            return (
+                previous_level,
+                previous_time,
+                charge_rate_sum,
+                charge_rate_count,
+                discharge_rate_sum,
+                discharge_rate_count,
+            )
+    except Exception:
+        return None, None, 0.0, 0, 0.0, 0
 
 def main():
     print(f"Monitoring battery...")
-    previous_level = None
-    previous_time = None
-    charge_rate_sum = 0.0
-    charge_rate_count = 0
-    discharge_rate_sum = 0.0
-    discharge_rate_count = 0
+    (
+        previous_level,
+        previous_time,
+        charge_rate_sum,
+        charge_rate_count,
+        discharge_rate_sum,
+        discharge_rate_count,
+    ) = load_persisted_state(LOG_FILE)
 
     while True:
         level = get_battery_level()
@@ -97,6 +181,8 @@ def main():
             charge_rate_count,
             discharge_rate_sum,
             discharge_rate_count,
+            previous_level,
+            previous_time,
         ) = update_average_rates(
             previous_level,
             previous_time,
@@ -119,13 +205,25 @@ def main():
             f"Average discharge rate: {avg_discharge:.2f}%/hr"
         )
 
+        try:
+            persist_battery_data(
+                LOG_FILE,
+                now,
+                level,
+                avg_charge,
+                avg_discharge,
+                charge_rate_sum,
+                charge_rate_count,
+                discharge_rate_sum,
+                discharge_rate_count,
+            )
+        except Exception as e:
+            print(f"Failed to persist battery data: {e}")
+
         if level >= UPPER_LIMIT:
             set_switch("turn_off")
         elif level <= LOWER_LIMIT:
             set_switch("turn_on")
-
-        previous_level = level
-        previous_time = now
         
         time.sleep(CHECK_INTERVAL)
 
