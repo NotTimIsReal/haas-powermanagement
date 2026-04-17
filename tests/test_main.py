@@ -37,10 +37,11 @@ class TestBatteryLevel(unittest.TestCase):
 
 
 class TestSetSwitch(unittest.TestCase):
-    @patch("main.print")
+    @patch("main.logging.info")
+    @patch("main.logging.error")
     @patch("main.requests.post")
     @patch("main.os.getenv")
-    def test_set_switch_success(self, mock_getenv, mock_post, mock_print):
+    def test_set_switch_success(self, mock_getenv, mock_post, mock_error, mock_info):
         mock_getenv.side_effect = lambda key: {
             "HAAS_URL": "http://ha.local",
             "ENTITY_ID": "switch.charger",
@@ -55,12 +56,13 @@ class TestSetSwitch(unittest.TestCase):
             headers=main.HEADERS,
             json={"entity_id": "switch.charger"},
         )
-        mock_print.assert_called_once_with("Successfully sent turn_on command.")
+        mock_info.assert_called_once_with("Successfully sent turn_on command.")
 
-    @patch("main.print")
+    @patch("main.logging.info")
+    @patch("main.logging.error")
     @patch("main.requests.post")
     @patch("main.os.getenv")
-    def test_set_switch_error_response(self, mock_getenv, mock_post, mock_print):
+    def test_set_switch_error_response(self, mock_getenv, mock_post, mock_error, mock_info):
         mock_getenv.side_effect = lambda key: {
             "HAAS_URL": "http://ha.local",
             "ENTITY_ID": "switch.charger",
@@ -69,12 +71,13 @@ class TestSetSwitch(unittest.TestCase):
 
         main.set_switch("turn_off")
 
-        mock_print.assert_called_once_with("Error: 500 - boom")
+        mock_error.assert_called_once_with("Error: 500 - boom")
 
-    @patch("main.print")
+    @patch("main.logging.info")
+    @patch("main.logging.error")
     @patch("main.requests.post", side_effect=Exception("network down"))
     @patch("main.os.getenv")
-    def test_set_switch_connection_failure(self, mock_getenv, _mock_post, mock_print):
+    def test_set_switch_connection_failure(self, mock_getenv, _mock_post, mock_error, mock_info):
         mock_getenv.side_effect = lambda key: {
             "HAAS_URL": "http://ha.local",
             "ENTITY_ID": "switch.charger",
@@ -82,7 +85,7 @@ class TestSetSwitch(unittest.TestCase):
 
         main.set_switch("turn_off")
 
-        mock_print.assert_called_once_with("Connection failed: network down")
+        mock_error.assert_called_once_with("Connection failed: network down")
 
 
 class TestUpdateAverageRates(unittest.TestCase):

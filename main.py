@@ -2,6 +2,7 @@ import requests
 import time
 import os
 import csv
+import logging
 from dotenv import load_dotenv
 load_dotenv()
 UPPER_LIMIT = 80  # Turn off at 80%
@@ -32,11 +33,11 @@ def set_switch(state):
     try:
         response = requests.post(url, headers=HEADERS, json=data)
         if response.status_code == 200:
-            print(f"Successfully sent {state} command.")
+            logging.info(f"Successfully sent {state} command.")
         else:
-            print(f"Error: {response.status_code} - {response.text}")
+            logging.error(f"Error: {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"Connection failed: {e}")
+        logging.error(f"Connection failed: {e}")
 
 
 def update_average_rates(
@@ -161,7 +162,11 @@ def load_persisted_state(file_path):
         return None, None, 0.0, 0, 0.0, 0
 
 def main():
-    print(f"Monitoring battery...")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    logging.info("Monitoring battery...")
     (
         previous_level,
         previous_time,
@@ -173,7 +178,7 @@ def main():
 
     while True:
         level = get_battery_level()
-        print(f"Current Battery: {level}%")
+        logging.info(f"Current Battery: {level}%")
 
         now = time.time()
         (
@@ -200,7 +205,7 @@ def main():
         avg_discharge = (
             discharge_rate_sum / discharge_rate_count if discharge_rate_count else 0.0
         )
-        print(
+        logging.info(
             f"Average charge rate: {avg_charge:.2f}%/hr | "
             f"Average discharge rate: {avg_discharge:.2f}%/hr"
         )
@@ -218,7 +223,7 @@ def main():
                 discharge_rate_count,
             )
         except Exception as e:
-            print(f"Failed to persist battery data: {e}")
+            logging.error(f"Failed to persist battery data: {e}")
 
         if level >= UPPER_LIMIT:
             set_switch("turn_off")
